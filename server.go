@@ -1,6 +1,7 @@
 package rudp
 
 import (
+	"errors"
 	"net"
 	"sync"
 	"time"
@@ -142,13 +143,19 @@ func (s *Server) GetConnection(addr string) (*Connection, bool) {
 }
 
 // Broadcast sends a packet to all connected clients
-func (s *Server) Broadcast(data []byte, mode DeliveryMode) {
+func (s *Server) Broadcast(data []byte, mode DeliveryMode) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	errs := make([]error, 0)
 	for _, conn := range s.connections {
-		conn.Send(data, mode)
+		if err := conn.Send(data, mode); err != nil {
+			errs = append(errs, err)
+			continue
+		}
 	}
+
+	return errors.Join(errs...)
 }
 
 // Close shuts down the server

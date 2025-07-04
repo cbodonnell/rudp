@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+const (
+	InactivityTimeout = 30 * time.Second // Timeout for connection inactivity
+)
+
 // Connection represents a reliable UDP connection to a peer
 type Connection struct {
 	mu   sync.RWMutex
@@ -117,7 +121,7 @@ func (c *Connection) Close() error {
 func (c *Connection) IsConnected() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return !c.closed && time.Since(c.lastReceived) < 30*time.Second
+	return !c.closed && time.Since(c.lastReceived) < InactivityTimeout
 }
 
 // RemoteAddr returns the remote address of the connection

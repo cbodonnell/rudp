@@ -8,33 +8,24 @@ import (
 	"time"
 
 	"github.com/cbodonnell/rudp"
+	"github.com/cbodonnell/rudp/examples/game/pkg/types"
 )
 
-type MessageType string
+type ConnectionEvent struct {
+	Conn *rudp.Connection
+	Type ConnectionEventType
+}
+
+type ConnectionEventType string
 
 const (
-	MsgPlayerAssignment MessageType = "player_assignment"
-	MsgPlayerMove       MessageType = "player_move"
-	MsgGameState        MessageType = "game_state"
+	ConnectionEventConnect    ConnectionEventType = "connect"
+	ConnectionEventDisconnect ConnectionEventType = "disconnect"
 )
 
-type Message struct {
-	Type MessageType     `json:"type"`
-	Data json.RawMessage `json:"data"`
-}
-
-type Player struct {
-	ID string `json:"id"`
-	X  int    `json:"x"`
-	Y  int    `json:"y"`
-}
-
-type PlayerAssignment struct {
-	PlayerID string `json:"player_id"`
-}
-
-type GameState struct {
-	Players map[string]Player `json:"players"`
+type ClientMessage struct {
+	Conn   *rudp.Connection
+	Packet *rudp.Packet
 }
 
 func generatePlayerID() string {
@@ -42,64 +33,23 @@ func generatePlayerID() string {
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
 	server := rudp.NewServer()
-	gameState := &GameState{Players: make(map[string]Player)}
+	gameState := &types.GameState{Players: make(map[string]*types.Player)}
 	connToPlayer := make(map[string]string) // conn addr -> player ID
 
+	connEventCh := make(chan ConnectionEvent, 1000)
+	clientMsgCh := make(chan ClientMessage, 1000)
+
 	server.OnConnect = func(conn *rudp.Connection) {
-		playerID := generatePlayerID()
-		connAddr := conn.RemoteAddr().String()
-		connToPlayer[connAddr] = playerID
-		gameState.Players[playerID] = Player{ID: playerID, X: 100, Y: 100}
-
-		fmt.Printf("Player joined: %s (ID: %s)\n", connAddr, playerID)
-
-		// Send player assignment
-		assignment := PlayerAssignment{PlayerID: playerID}
-		assignmentData, _ := json.Marshal(assignment)
-		msg := Message{Type: MsgPlayerAssignment, Data: assignmentData}
-		msgData, _ := json.Marshal(msg)
-		conn.Send(msgData, rudp.Reliable)
-
-		// Send initial game state
-		stateData, _ := json.Marshal(gameState)
-		stateMsg := Message{Type: MsgGameState, Data: stateData}
-		stateMsgData, _ := json.Marshal(stateMsg)
-		conn.Send(stateMsgData, rudp.Reliable)
+		connEventCh <- ConnectionEvent{Conn: conn, Type: ConnectionEventConnect}
 	}
 
 	server.OnMessage = func(conn *rudp.Connection, packet *rudp.Packet) {
-		var msg Message
-		if err := json.Unmarshal(packet.Data, &msg); err != nil {
-			return
-		}
-
-		switch msg.Type {
-		case MsgPlayerMove:
-			var player Player
-			if err := json.Unmarshal(msg.Data, &player); err != nil {
-				return
-			}
-
-			// Update player position
-			gameState.Players[player.ID] = player
-
-			// Broadcast to all players
-			stateData, _ := json.Marshal(gameState)
-			stateMsg := Message{Type: MsgGameState, Data: stateData}
-			stateMsgData, _ := json.Marshal(stateMsg)
-			server.Broadcast(stateMsgData, rudp.Unreliable)
-		}
+		clientMsgCh <- ClientMessage{Conn: conn, Packet: packet}
 	}
 
 	server.OnDisconnect = func(conn *rudp.Connection) {
-		connAddr := conn.RemoteAddr().String()
-		if playerID, exists := connToPlayer[connAddr]; exists {
-			delete(gameState.Players, playerID)
-			delete(connToPlayer, connAddr)
-			fmt.Printf("Player left: %s (ID: %s)\n", connAddr, playerID)
-		}
+		connEventCh <- ConnectionEvent{Conn: conn, Type: ConnectionEventDisconnect}
 	}
 
 	fmt.Println("Game server starting on :8080")
@@ -107,5 +57,123 @@ func main() {
 		log.Fatal(err)
 	}
 
-	select {} // Keep running
+	// Start the game loop
+	gameLoopTicker := time.NewTicker(50 * time.Millisecond)
+	defer gameLoopTicker.Stop()
+	for range gameLoopTicker.C {
+		// first process connection events
+		for len(connEventCh) > 0 {
+			event := <-connEventCh
+			switch event.Type {
+			case ConnectionEventConnect:
+				conn := event.Conn
+				playerID := generatePlayerID()
+				connAddr := conn.RemoteAddr().String()
+				connToPlayer[connAddr] = playerID
+				p := &types.Player{ID: playerID, X: 100, Y: 100}
+				gameState.Players[playerID] = p
+
+				fmt.Printf("Player joined: %s (ID: %s)\n", connAddr, playerID)
+
+				// Send player assignment
+				assignment := types.PlayerAssignment{PlayerID: playerID}
+				assignmentData, err := json.Marshal(assignment)
+				if err != nil {
+					log.Printf("Failed to marshal player assignment: %v", err)
+					continue
+				}
+				msg := types.Message{Type: types.MsgServerPlayerAssignment, Data: assignmentData}
+				msgData, err := json.Marshal(msg)
+				if err != nil {
+					log.Printf("Failed to marshal player assignment: %v", err)
+					continue
+				}
+				if err := conn.Send(msgData, rudp.Reliable); err != nil {
+					log.Printf("Failed to send player assignment: %v", err)
+					continue
+				}
+
+				// Send initial game state
+				stateData, err := json.Marshal(gameState)
+				if err != nil {
+					log.Printf("Failed to marshal game state: %v", err)
+					continue
+				}
+				stateMsg := types.Message{Type: types.MsgServerGameState, Data: stateData}
+				stateMsgData, err := json.Marshal(stateMsg)
+				if err != nil {
+					log.Printf("Failed to marshal game state message: %v", err)
+					continue
+				}
+				if err := conn.Send(stateMsgData, rudp.Reliable); err != nil {
+					log.Printf("Failed to send game state: %v", err)
+					continue
+				}
+			case ConnectionEventDisconnect:
+				conn := event.Conn
+				connAddr := conn.RemoteAddr().String()
+				if playerID, exists := connToPlayer[connAddr]; exists {
+					delete(gameState.Players, playerID)
+					delete(connToPlayer, connAddr)
+					fmt.Printf("Player left: %s (ID: %s)\n", connAddr, playerID)
+				}
+			default:
+				log.Printf("Unknown connection event: %s", event.Type)
+			}
+		}
+
+		// then process client messages
+		for len(clientMsgCh) > 0 {
+			cm := <-clientMsgCh
+			connAddr := cm.Conn.RemoteAddr().String()
+			playerID, exists := connToPlayer[connAddr]
+			if !exists {
+				log.Printf("Received message from unknown player: %s", connAddr)
+				continue
+			}
+			player, exists := gameState.Players[playerID]
+			if !exists {
+				log.Printf("Player not found in game state: %s (ID: %s)", connAddr, playerID)
+				continue
+			}
+
+			packet := cm.Packet
+			var msg types.Message
+			if err := json.Unmarshal(packet.Data, &msg); err != nil {
+				log.Printf("Failed to unmarshal message: %v", err)
+				continue
+			}
+			switch msg.Type {
+			case types.MsgClientPlayerInput:
+				var input types.PlayerInput
+				if err := json.Unmarshal(msg.Data, &input); err != nil {
+					log.Printf("Failed to unmarshal player input: %v", err)
+					continue
+				}
+
+				player.X += input.X
+				player.Y += input.Y
+			default:
+				log.Printf("Unknown message type from %s: %s", connAddr, msg.Type)
+				continue
+			}
+		}
+
+		// lastly, broadcast the game state to all players
+		stateData, err := json.Marshal(gameState)
+		if err != nil {
+			log.Printf("Failed to marshal game state: %v", err)
+			continue
+		}
+		stateMsg := types.Message{Type: types.MsgServerGameState, Data: stateData}
+		stateMsgData, err := json.Marshal(stateMsg)
+		if err != nil {
+			log.Printf("Failed to marshal game state message: %v", err)
+			continue
+		}
+		if err := server.Broadcast(stateMsgData, rudp.Unreliable); err != nil {
+			log.Printf("Failed to broadcast game state: %v", err)
+			continue
+		}
+	}
 }

@@ -6,98 +6,81 @@ import (
 	"log"
 
 	"github.com/cbodonnell/rudp"
+	"github.com/cbodonnell/rudp/examples/game/pkg/types"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
-	"github.com/hajimehoshi/ebiten/v2/inpututil"
 )
-
-type MessageType string
-
-const (
-	MsgPlayerLogin      MessageType = "player_login"
-	MsgPlayerAssignment MessageType = "player_assignment"
-	MsgPlayerMove       MessageType = "player_move"
-	MsgGameState        MessageType = "game_state"
-)
-
-type Message struct {
-	Type MessageType     `json:"type"`
-	Data json.RawMessage `json:"data"`
-}
-
-type Player struct {
-	ID string `json:"id"`
-	X  int    `json:"x"`
-	Y  int    `json:"y"`
-}
-
-type PlayerAssignment struct {
-	PlayerID string `json:"player_id"`
-}
-
-type GameState struct {
-	Players map[string]Player `json:"players"`
-}
 
 type Game struct {
 	client    *rudp.Client
-	gameState *GameState
+	gameState *types.GameState
 	playerID  string
 }
 
 func (g *Game) Update() error {
-	if g.playerID == "" {
-		// If player ID is not set, send login message
-		loginMsg := Message{Type: MsgPlayerLogin}
-		loginData, _ := json.Marshal(loginMsg)
-		g.client.Send(loginData, rudp.Reliable)
-		return nil
-	}
-
 	if g.client == nil || !g.client.IsConnected() {
 		return nil
 	}
 
-	// Get current player
-	player, exists := g.gameState.Players[g.playerID]
-	if !exists {
-		return nil
-	}
-
 	// Handle input
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) {
-		player.X -= 20
+	input := types.PlayerInput{}
+	if ebiten.IsKeyPressed(ebiten.KeyA) || ebiten.IsKeyPressed(ebiten.KeyArrowLeft) {
+		input.X -= 1
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) {
-		player.X += 20
+	if ebiten.IsKeyPressed(ebiten.KeyD) || ebiten.IsKeyPressed(ebiten.KeyArrowRight) {
+		input.X += 1
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
-		player.Y -= 20
+	if ebiten.IsKeyPressed(ebiten.KeyW) || ebiten.IsKeyPressed(ebiten.KeyArrowUp) {
+		input.Y -= 1
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
-		player.Y += 20
+	if ebiten.IsKeyPressed(ebiten.KeyS) || ebiten.IsKeyPressed(ebiten.KeyArrowDown) {
+		input.Y += 1
 	}
 
 	// Send movement to server
-	playerData, _ := json.Marshal(player)
-	msg := Message{Type: MsgPlayerMove, Data: playerData}
-	msgData, _ := json.Marshal(msg)
-	g.client.Send(msgData, rudp.Unreliable)
+	inputData, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	msg := types.Message{Type: types.MsgClientPlayerInput, Data: inputData}
+	msgData, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	if err := g.client.Send(msgData, rudp.Unreliable); err != nil {
+		return err
+	}
+
+	// TODO: Client prediction and reconciliation
+	// player.X += input.X
+	// player.Y += input.Y
 
 	return nil
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	// Draw all players
+	// Sort players by ID with the local player first
+	var localPlayer *types.Player
+	remotePlayers := make([]*types.Player, 0, len(g.gameState.Players))
 	for _, player := range g.gameState.Players {
-		playerColor := color.RGBA{255, 255, 255, 255} // white
 		if player.ID == g.playerID {
-			playerColor = color.RGBA{255, 100, 100, 255} // red
+			localPlayer = player
+		} else {
+			remotePlayers = append(remotePlayers, player)
 		}
+	}
+	// Draw remote players
+	for _, player := range remotePlayers {
+		playerColor := color.RGBA{255, 255, 255, 255} // white
 		ebitenutil.DrawRect(screen, float64(player.X), float64(player.Y), 20, 20, playerColor)
 	}
+	// Draw local player
+	if localPlayer != nil {
+		playerColor := color.RGBA{100, 255, 100, 255} // green
+		ebitenutil.DrawRect(screen, float64(localPlayer.X), float64(localPlayer.Y), 20, 20, playerColor)
+	}
 
-	ebitenutil.DebugPrint(screen, "Arrow keys to move\nYour ID: "+g.playerID)
+	ebitenutil.DebugPrint(screen, "WASD or Arrow keys to move\nYour ID: "+g.playerID)
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
@@ -108,26 +91,31 @@ func main() {
 	client := rudp.NewClient()
 	game := &Game{
 		client:    client,
-		gameState: &GameState{Players: make(map[string]Player)},
+		gameState: &types.GameState{Players: make(map[string]*types.Player)},
 	}
 
 	client.OnMessage = func(packet *rudp.Packet) {
-		var msg Message
+		var msg types.Message
 		if err := json.Unmarshal(packet.Data, &msg); err != nil {
+			log.Printf("Failed to unmarshal message: %v", err)
 			return
 		}
 
 		switch msg.Type {
-		case MsgPlayerAssignment:
-			var assignment PlayerAssignment
-			if err := json.Unmarshal(msg.Data, &assignment); err == nil {
-				game.playerID = assignment.PlayerID
+		case types.MsgServerPlayerAssignment:
+			var assignment types.PlayerAssignment
+			if err := json.Unmarshal(msg.Data, &assignment); err != nil {
+				log.Printf("Failed to unmarshal player assignment: %v", err)
+				return
 			}
-		case MsgGameState:
-			var state GameState
-			if err := json.Unmarshal(msg.Data, &state); err == nil {
-				game.gameState = &state
+			game.playerID = assignment.PlayerID
+		case types.MsgServerGameState:
+			var state types.GameState
+			if err := json.Unmarshal(msg.Data, &state); err != nil {
+				log.Printf("Failed to unmarshal game state: %v", err)
+				return
 			}
+			game.gameState = &state
 		}
 	}
 
