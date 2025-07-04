@@ -1,0 +1,5 @@
+# Ignore System files
+.DS_Store
+
+# Ignore build directories
+bin/
