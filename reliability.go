@@ -71,10 +71,10 @@ func (c *Connection) checkRetransmissions() {
 }
 
 // HandleIncomingPacket processes received packets
-func (c *Connection) HandleIncomingPacket(data []byte) {
+func (c *Connection) HandleIncomingPacket(data []byte) error {
 	packet := &Packet{}
 	if err := packet.Unmarshal(data); err != nil {
-		return
+		return err
 	}
 
 	c.mu.Lock()
@@ -92,6 +92,8 @@ func (c *Connection) HandleIncomingPacket(data []byte) {
 
 	// Handle packet based on delivery mode
 	c.handlePacketDelivery(packet)
+
+	return nil
 }
 
 // processAcknowledgments removes acknowledged packets from pending list

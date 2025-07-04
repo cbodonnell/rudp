@@ -144,6 +144,16 @@ func main() {
 				continue
 			}
 			switch msg.Type {
+			case types.MsgClientPlayerLogin:
+				// TODO: not implemented yet
+			case types.MsgClientPlayerLogout:
+				conn := cm.Conn
+				connAddr := conn.RemoteAddr().String()
+				if playerID, exists := connToPlayer[connAddr]; exists {
+					delete(gameState.Players, playerID)
+					delete(connToPlayer, connAddr)
+					fmt.Printf("Player left: %s (ID: %s)\n", connAddr, playerID)
+				}
 			case types.MsgClientPlayerInput:
 				var input types.PlayerInput
 				if err := json.Unmarshal(msg.Data, &input); err != nil {

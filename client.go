@@ -62,7 +62,10 @@ func (c *Client) handlePackets() {
 				return
 			}
 
-			c.connection.HandleIncomingPacket(buffer[:n])
+			if err := c.connection.HandleIncomingPacket(buffer[:n]); err != nil {
+				// TODO: log the error
+				continue
+			}
 		}
 	}
 }

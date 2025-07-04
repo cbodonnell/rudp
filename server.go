@@ -1,7 +1,9 @@
 package rudp
 
 import (
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"net"
 	"sync"
 	"time"
@@ -11,7 +13,7 @@ import (
 type Server struct {
 	mu          sync.RWMutex
 	conn        *net.UDPConn
-	connections map[string]*Connection
+	connections map[uint32]*Connection
 
 	// Events
 	OnConnect    func(*Connection)
@@ -24,7 +26,7 @@ type Server struct {
 // NewServer creates a new UDP server
 func NewServer() *Server {
 	return &Server{
-		connections: make(map[string]*Connection),
+		connections: make(map[uint32]*Connection),
 		done:        make(chan struct{}),
 	}
 }
@@ -61,36 +63,39 @@ func (s *Server) handlePackets() {
 				continue
 			}
 
-			s.handlePacket(buffer[:n], addr)
+			if err := s.handlePacket(buffer[:n], addr); err != nil {
+				// TODO: log the error
+				continue
+			}
 		}
 	}
 }
 
 // handlePacket routes a packet to the appropriate connection
-func (s *Server) handlePacket(data []byte, addr *net.UDPAddr) {
-	addrStr := addr.String()
+func (s *Server) handlePacket(data []byte, addr *net.UDPAddr) error {
+	hash := addrHash(addr)
 
 	s.mu.Lock()
-	conn, exists := s.connections[addrStr]
+	conn, exists := s.connections[hash]
 	if !exists {
 		conn = NewConnection(s.conn, addr)
-		s.connections[addrStr] = conn
+		s.connections[hash] = conn
 		s.mu.Unlock()
 
 		if s.OnConnect != nil {
 			s.OnConnect(conn)
 		}
 
-		go s.handleConnection(conn)
+		go s.handleConnection(hash, conn)
 	} else {
 		s.mu.Unlock()
 	}
 
-	conn.HandleIncomingPacket(data)
+	return conn.HandleIncomingPacket(data)
 }
 
 // handleConnection processes packets from a specific connection
-func (s *Server) handleConnection(conn *Connection) {
+func (s *Server) handleConnection(hash uint32, conn *Connection) {
 	for {
 		packet, err := conn.Receive()
 		if err != nil {
@@ -104,7 +109,7 @@ func (s *Server) handleConnection(conn *Connection) {
 
 	// Connection closed
 	s.mu.Lock()
-	delete(s.connections, conn.addr.String())
+	delete(s.connections, hash)
 	s.mu.Unlock()
 
 	if s.OnDisconnect != nil {
@@ -114,7 +119,7 @@ func (s *Server) handleConnection(conn *Connection) {
 
 // cleanupConnections removes stale connections
 func (s *Server) cleanupConnections() {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -135,10 +140,10 @@ func (s *Server) cleanupConnections() {
 }
 
 // GetConnection returns a connection by address
-func (s *Server) GetConnection(addr string) (*Connection, bool) {
+func (s *Server) GetConnection(hash uint32) (*Connection, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	conn, exists := s.connections[addr]
+	conn, exists := s.connections[hash]
 	return conn, exists
 }
 
@@ -172,4 +177,11 @@ func (s *Server) Close() error {
 		return s.conn.Close()
 	}
 	return nil
+}
+
+// addrHash generates a hash for the UDP address
+func addrHash(addr *net.UDPAddr) uint32 {
+	port := make([]byte, 4)
+	binary.LittleEndian.PutUint32(port, uint32(addr.Port))
+	return crc32.ChecksumIEEE(append(addr.IP, port...))
 }

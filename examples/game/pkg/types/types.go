@@ -8,8 +8,9 @@ const (
 	MsgServerPlayerAssignment MessageType = "player_assignment"
 	MsgServerGameState        MessageType = "game_state"
 
-	MsgClientPlayerLogin MessageType = "player_login"
-	MsgClientPlayerInput MessageType = "player_move"
+	MsgClientPlayerLogin  MessageType = "player_login"  // TODO: implement login
+	MsgClientPlayerLogout MessageType = "player_logout" // TODO: implement logout
+	MsgClientPlayerInput  MessageType = "player_move"
 )
 
 type Message struct {

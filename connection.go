@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	InactivityTimeout = 30 * time.Second // Timeout for connection inactivity
+	InactivityTimeout = 5 * time.Second // Timeout for connection inactivity
 )
 
 // Connection represents a reliable UDP connection to a peer
