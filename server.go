@@ -2,7 +2,6 @@ package rudp
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -96,8 +95,6 @@ func (s *Server) handlePacket(data []byte, addr *net.UDPAddr) error {
 
 	// Update address if client reconnected from different port/IP
 	if conn.RemoteAddr().String() != addr.String() {
-		fmt.Printf("Client %d address changed: %s -> %s\n",
-			packet.ClientID, conn.RemoteAddr().String(), addr.String())
 		conn.UpdateAddr(addr)
 	}
 
@@ -114,14 +111,11 @@ func (s *Server) handleConnect(packet *Packet, addr *net.UDPAddr) error {
 	if exists {
 		// Client reconnecting from different address
 		if conn.RemoteAddr().String() != addr.String() {
-			fmt.Printf("Client %d reconnecting from new addr: %s (was: %s)\n",
-				clientID, addr.String(), conn.RemoteAddr().String())
 			conn.UpdateAddr(addr)
 		}
 		s.mu.Unlock()
 	} else {
 		// New connection
-		fmt.Printf("New connection from addr: %s, clientID: %d\n", addr.String(), clientID)
 		conn = NewConnection(s.conn, addr, clientID)
 		s.connections[clientID] = conn
 		s.mu.Unlock()
