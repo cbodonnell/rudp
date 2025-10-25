@@ -1,9 +1,8 @@
 package rudp
 
 import (
-	"encoding/binary"
 	"errors"
-	"hash/crc32"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -13,7 +12,7 @@ import (
 type Server struct {
 	mu          sync.RWMutex
 	conn        *net.UDPConn
-	connections map[uint32]*Connection
+	connections map[uint32]*Connection // Keyed by ClientID
 
 	// Events
 	OnConnect    func(*Connection)
@@ -73,29 +72,81 @@ func (s *Server) handlePackets() {
 
 // handlePacket routes a packet to the appropriate connection
 func (s *Server) handlePacket(data []byte, addr *net.UDPAddr) error {
-	hash := addrHash(addr)
+	// Parse packet to determine type and client ID
+	packet := &Packet{}
+	if err := packet.Unmarshal(data); err != nil {
+		return err
+	}
+
+	// Handle CONNECT packets specially
+	if packet.Type == CONNECT {
+		return s.handleConnect(packet, addr)
+	}
+
+	// Route to connection by ClientID (O(1) lookup)
+	s.mu.RLock()
+	conn, exists := s.connections[packet.ClientID]
+	s.mu.RUnlock()
+
+	if !exists {
+		// Silently drop packets from unknown clients
+		// They need to send CONNECT first
+		return nil
+	}
+
+	// Update address if client reconnected from different port/IP
+	if conn.RemoteAddr().String() != addr.String() {
+		fmt.Printf("Client %d address changed: %s -> %s\n",
+			packet.ClientID, conn.RemoteAddr().String(), addr.String())
+		conn.UpdateAddr(addr)
+	}
+
+	return conn.HandleIncomingPacket(packet)
+}
+
+// handleConnect processes CONNECT packets and establishes new connections
+func (s *Server) handleConnect(packet *Packet, addr *net.UDPAddr) error {
+	clientID := packet.ClientID
 
 	s.mu.Lock()
-	conn, exists := s.connections[hash]
-	if !exists {
-		conn = NewConnection(s.conn, addr)
-		s.connections[hash] = conn
+	conn, exists := s.connections[clientID]
+
+	if exists {
+		// Client reconnecting from different address
+		if conn.RemoteAddr().String() != addr.String() {
+			fmt.Printf("Client %d reconnecting from new addr: %s (was: %s)\n",
+				clientID, addr.String(), conn.RemoteAddr().String())
+			conn.UpdateAddr(addr)
+		}
+		s.mu.Unlock()
+	} else {
+		// New connection
+		fmt.Printf("New connection from addr: %s, clientID: %d\n", addr.String(), clientID)
+		conn = NewConnection(s.conn, addr, clientID)
+		s.connections[clientID] = conn
 		s.mu.Unlock()
 
 		if s.OnConnect != nil {
 			s.OnConnect(conn)
 		}
 
-		go s.handleConnection(hash, conn)
-	} else {
-		s.mu.Unlock()
+		go s.handleConnection(clientID, conn)
 	}
 
-	return conn.HandleIncomingPacket(data)
+	// Send CONNECT_ACK
+	ackPacket := &Packet{
+		Type:     CONNECT_ACK,
+		ClientID: clientID,
+		Data:     []byte{},
+	}
+	ackData := ackPacket.Marshal()
+	s.conn.WriteToUDP(ackData, addr)
+
+	return nil
 }
 
 // handleConnection processes packets from a specific connection
-func (s *Server) handleConnection(hash uint32, conn *Connection) {
+func (s *Server) handleConnection(clientID uint32, conn *Connection) {
 	for {
 		packet, err := conn.Receive()
 		if err != nil {
@@ -109,7 +160,7 @@ func (s *Server) handleConnection(hash uint32, conn *Connection) {
 
 	// Connection closed
 	s.mu.Lock()
-	delete(s.connections, hash)
+	delete(s.connections, clientID)
 	s.mu.Unlock()
 
 	if s.OnDisconnect != nil {
@@ -126,10 +177,10 @@ func (s *Server) cleanupConnections() {
 		select {
 		case <-ticker.C:
 			s.mu.Lock()
-			for addr, conn := range s.connections {
+			for clientID, conn := range s.connections {
 				if !conn.IsConnected() {
 					conn.Close()
-					delete(s.connections, addr)
+					delete(s.connections, clientID)
 				}
 			}
 			s.mu.Unlock()
@@ -137,14 +188,6 @@ func (s *Server) cleanupConnections() {
 			return
 		}
 	}
-}
-
-// GetConnection returns a connection by address
-func (s *Server) GetConnection(hash uint32) (*Connection, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	conn, exists := s.connections[hash]
-	return conn, exists
 }
 
 // Broadcast sends a packet to all connected clients
@@ -177,11 +220,4 @@ func (s *Server) Close() error {
 		return s.conn.Close()
 	}
 	return nil
-}
-
-// addrHash generates a hash for the UDP address
-func addrHash(addr *net.UDPAddr) uint32 {
-	port := make([]byte, 4)
-	binary.LittleEndian.PutUint32(port, uint32(addr.Port))
-	return crc32.ChecksumIEEE(append(addr.IP, port...))
 }

@@ -16,6 +16,9 @@ type Connection struct {
 	addr *net.UDPAddr
 	conn *net.UDPConn
 
+	// Identity
+	clientID uint32
+
 	// Sequence tracking
 	localSequence  uint16
 	remoteSequence uint16
@@ -38,10 +41,11 @@ type Connection struct {
 }
 
 // NewConnection creates a new connection to the specified address
-func NewConnection(conn *net.UDPConn, addr *net.UDPAddr) *Connection {
+func NewConnection(conn *net.UDPConn, addr *net.UDPAddr, clientID uint32) *Connection {
 	c := &Connection{
 		addr:          addr,
 		conn:          conn,
+		clientID:      clientID,
 		pendingAcks:   make(map[uint16]*Packet),
 		recvBuffer:    make(map[uint16]*Packet),
 		orderedBuffer: make(map[uint16]*Packet),
@@ -71,6 +75,8 @@ func (c *Connection) Send(data []byte, mode DeliveryMode) error {
 	}
 
 	packet := &Packet{
+		Type:      DATA,
+		ClientID:  c.clientID,
 		Sequence:  c.localSequence,
 		Ack:       c.remoteSequence,
 		AckBits:   c.ackBits,
@@ -127,4 +133,16 @@ func (c *Connection) IsConnected() bool {
 // RemoteAddr returns the remote address of the connection
 func (c *Connection) RemoteAddr() *net.UDPAddr {
 	return c.addr
+}
+
+// ClientID returns the client ID of the connection
+func (c *Connection) ClientID() uint32 {
+	return c.clientID
+}
+
+// UpdateAddr updates the remote address (for handling reconnections)
+func (c *Connection) UpdateAddr(addr *net.UDPAddr) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addr = addr
 }

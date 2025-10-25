@@ -64,7 +64,7 @@ func main() {
 	}()
 
 	// Run for demo
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 	server.Close()
 	fmt.Println("Demo complete")
 }

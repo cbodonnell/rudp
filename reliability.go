@@ -71,12 +71,7 @@ func (c *Connection) checkRetransmissions() {
 }
 
 // HandleIncomingPacket processes received packets
-func (c *Connection) HandleIncomingPacket(data []byte) error {
-	packet := &Packet{}
-	if err := packet.Unmarshal(data); err != nil {
-		return err
-	}
-
+func (c *Connection) HandleIncomingPacket(packet *Packet) error {
 	c.mu.Lock()
 	c.lastReceived = time.Now()
 
